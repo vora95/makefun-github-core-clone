@@ -16,6 +16,38 @@ export function globalId(kind: string, id: number | string): string {
   return Buffer.from(`${kind}:${id}`).toString('base64');
 }
 
+// ---------------------------------------------------------------------------
+// ResponseCache — bounded FIFO cache of pre-built git-protocol response
+// Buffers, scoped per Repo (held on the Repo so it dies with the repo and
+// can never leak across stores). Entries are only ever stored for inputs
+// whose output is a pure function of immutable state (see gitproto.ts):
+//   advertisement / ls-refs  -> keyed by refsVersion (bumped on every refs
+//     mutation) + immutable tag objects; defaultBranch never changes.
+//   fetch packfile          -> keyed by wants/haves/shallow/deepen/deepenNot
+//     + objects.size (objects are append-only, so any object-set change
+//     changes the size and the key). Deterministic: same key, same bytes.
+// Caps keep memory bounded; eviction is FIFO (oldest first).
+// ---------------------------------------------------------------------------
+export class ResponseCache {
+  private static readonly MAX_ENTRIES = 256;
+  private static readonly MAX_BYTES = 8 * 1024 * 1024;
+  private map = new Map<string, Buffer>();
+  private bytes = 0;
+
+  get(key: string): Buffer | undefined { return this.map.get(key); }
+
+  set(key: string, value: Buffer): void {
+    if (this.map.has(key)) return; // already cached; value is deterministic
+    while ((this.map.size >= ResponseCache.MAX_ENTRIES || this.bytes + value.length > ResponseCache.MAX_BYTES) && this.map.size > 0) {
+      const oldest = this.map.keys().next().value!;
+      this.bytes -= this.map.get(oldest)!.length;
+      this.map.delete(oldest);
+    }
+    this.map.set(key, value);
+    this.bytes += value.length;
+  }
+}
+
 export interface Label { name: string; color: string }
 export interface Comment { id: number; body: string }
 export interface Issue {
@@ -52,6 +84,8 @@ export class Repo {
   pulls: Pull[] = [];
   pullSeq = 0;
   seq = 0; // creation order (pagination)
+  refsVersion = 0; // bumped on every refs mutation; invalidates adv/ls-refs cache
+  gitCache = new ResponseCache(); // pre-built git-protocol responses (see ResponseCache)
 
   constructor(id: number, name: string, description: string, isPrivate: boolean) {
     this.id = id; this.name = name;
@@ -69,7 +103,8 @@ export class Repo {
 
   refTip(ref: string): string | undefined { return this.refs.get(ref); }
   branchTip(branch: string): string | undefined { return this.refs.get(`refs/heads/${branch}`); }
-  setBranch(branch: string, oid: string): void { this.refs.set(`refs/heads/${branch}`, oid); }
+  setBranch(branch: string, oid: string): void { this.refs.set(`refs/heads/${branch}`, oid); this.touchRefs(); }
+  touchRefs(): void { this.refsVersion++; }
 
   branches(): Array<{ name: string; sha: string }> {
     const out: Array<{ name: string; sha: string }> = [];

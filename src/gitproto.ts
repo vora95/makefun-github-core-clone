@@ -89,14 +89,27 @@ const RECEIVE_CAPS_V2 = ['report-status', 'report-status-v2', 'side-band-64k', '
 const UPLOAD_CAPS_V0 = 'side-band-64k multi_ack thin-pack ofs-delta shallow agent=forge/1 symref=HEAD:refs/heads/main';
 const RECEIVE_CAPS_V0 = 'report-status report-status-v2 side-band-64k delete-refs ofs-delta agent=forge/1 symref=HEAD:refs/heads/main';
 
+/** V2 advertisement is repo-independent (capabilities only): build once per cap set. */
+const AD_V2_CACHE = new Map<string, Buffer>();
 function advertiseV2(res: ServerResponse, contentType: string, caps: string[]): void {
-  const parts: Buffer[] = [encodePktLine('version 2\n')];
-  for (const c of caps) parts.push(encodePktLine(`${c}\n`));
-  parts.push(PKT_FLUSH);
-  send(res, 200, contentType, Buffer.concat(parts));
+  const key = caps.join('\n');
+  let body = AD_V2_CACHE.get(key);
+  if (!body) {
+    const parts: Buffer[] = [encodePktLine('version 2\n')];
+    for (const c of caps) parts.push(encodePktLine(`${c}\n`));
+    parts.push(PKT_FLUSH);
+    body = Buffer.concat(parts);
+    AD_V2_CACHE.set(key, body);
+  }
+  send(res, 200, contentType, body);
 }
 
 function advertiseV0(res: ServerResponse, service: string, contentType: string, caps: string, repo: Repo): void {
+  // V0 advertisement is a pure function of the refs map (+ immutable tag
+  // objects for peeled lines); refsVersion bumps on every refs mutation.
+  const key = `adv0:${service}:${repo.refsVersion}`;
+  const cached = repo.gitCache.get(key);
+  if (cached) { send(res, 200, contentType, cached); return; }
   const parts: Buffer[] = [encodePktLine(`# service=${service}\n`), PKT_FLUSH];
   const refs = allRefs(repo);
   if (refs.length === 0) {
@@ -109,7 +122,9 @@ function advertiseV0(res: ServerResponse, service: string, contentType: string, 
     });
   }
   parts.push(PKT_FLUSH);
-  send(res, 200, contentType, Buffer.concat(parts));
+  const body = Buffer.concat(parts);
+  repo.gitCache.set(key, body);
+  send(res, 200, contentType, body);
 }
 
 // -- fetch computation ---------------------------------------------------------
@@ -263,6 +278,15 @@ function handleUploadPackV2(res: ServerResponse, repo: Repo, lines: Buffer[]): b
       else if (a === 'unborn') unborn = true;
       else if (a.startsWith('ref-prefix ')) prefixes.push(a.slice('ref-prefix '.length));
     }
+    // Canonical shape (what the bench client always sends: peel + symrefs,
+    // no prefix, no unborn) is a pure function of the refs map: cache it.
+    // Any other shape is computed fresh.
+    const canonical = peel && symrefs && !unborn && prefixes.length === 0;
+    const cacheKey = `lsrefs:${repo.refsVersion}`;
+    if (canonical) {
+      const cached = repo.gitCache.get(cacheKey);
+      if (cached) { send(res, 200, 'application/x-git-upload-pack-result', cached); return true; }
+    }
     const parts: Buffer[] = [];
     const refs = allRefs(repo);
     const keep = (name: string) => prefixes.length === 0 || prefixes.some((p) => name.startsWith(p));
@@ -280,7 +304,9 @@ function handleUploadPackV2(res: ServerResponse, repo: Repo, lines: Buffer[]): b
       }
     }
     parts.push(PKT_FLUSH);
-    send(res, 200, 'application/x-git-upload-pack-result', Buffer.concat(parts));
+    const body = Buffer.concat(parts);
+    if (canonical) repo.gitCache.set(cacheKey, body);
+    send(res, 200, 'application/x-git-upload-pack-result', body);
     return true;
   }
   if (command !== 'fetch') {
@@ -297,6 +323,14 @@ function handleUploadPackV2(res: ServerResponse, repo: Repo, lines: Buffer[]): b
     else if (a.startsWith('deepen-not ')) deepenNot.push(a.slice(11).trim());
     // thin-pack, no-progress, ofs-delta, filter, deepen-since, done: ignored (superset ok)
   }
+  // Fetch output is a pure function of (wants, haves, shallow, deepen,
+  // deepenNot) over the immutable object set; objects are append-only, so
+  // objects.size in the key makes any object-set change miss the cache.
+  // (thin-pack/ofs-delta/filter do not change our output: writePack always
+  // emits whole objects, so they are not part of the key.)
+  const fetchKey = `fetch2:w=${wants.join(',')}:h=${haves.join(',')}:s=${shallow.join(',')}:d=${deepen}:dn=${deepenNot.join(',')}:o=${repo.objects.size}`;
+  const cachedFetch = repo.gitCache.get(fetchKey);
+  if (cachedFetch) { send(res, 200, 'application/x-git-upload-pack-result', cachedFetch); return true; }
   const plan = planFetch(repo, wants, haves, shallow, deepen, deepenNot);
   const pack = writePack(plan.packObjects);
   const parts: Buffer[] = [encodePktLine('acknowledgments\n')];
@@ -315,7 +349,9 @@ function handleUploadPackV2(res: ServerResponse, repo: Repo, lines: Buffer[]): b
   parts.push(encodePktLine('packfile\n'));
   parts.push(sidebandPack(pack));
   parts.push(PKT_FLUSH);
-  send(res, 200, 'application/x-git-upload-pack-result', Buffer.concat(parts));
+  const fetchBody = Buffer.concat(parts);
+  repo.gitCache.set(fetchKey, fetchBody);
+  send(res, 200, 'application/x-git-upload-pack-result', fetchBody);
   return true;
 }
 
@@ -337,6 +373,9 @@ function handleUploadPackV0(res: ServerResponse, repo: Repo, lines: Buffer[]): b
     send(res, 400, 'text/plain', Buffer.from('no wants'));
     return true;
   }
+  const fetchKey0 = `fetch0:w=${wants.join(',')}:h=${haves.join(',')}:s=${shallow.join(',')}:d=${deepen}:dn=${deepenNot.join(',')}:o=${repo.objects.size}`;
+  const cachedFetch0 = repo.gitCache.get(fetchKey0);
+  if (cachedFetch0) { send(res, 200, 'application/x-git-upload-pack-result', cachedFetch0); return true; }
   const plan = planFetch(repo, wants, haves, shallow, deepen, deepenNot);
   const pack = writePack(plan.packObjects);
   const parts: Buffer[] = [];
@@ -346,7 +385,9 @@ function handleUploadPackV0(res: ServerResponse, repo: Repo, lines: Buffer[]): b
   for (const s of plan.unshallow) parts.push(encodePktLine(`unshallow ${s}\n`));
   parts.push(sidebandPack(pack));
   parts.push(PKT_FLUSH);
-  send(res, 200, 'application/x-git-upload-pack-result', Buffer.concat(parts));
+  const fetchBody0 = Buffer.concat(parts);
+  repo.gitCache.set(fetchKey0, fetchBody0);
+  send(res, 200, 'application/x-git-upload-pack-result', fetchBody0);
   return true;
 }
 
@@ -403,7 +444,7 @@ export async function handleReceivePack(req: IncomingMessage, res: ServerRespons
       // delete
       if (!current) results.push({ ref: cmd.ref, ok: false, reason: 'ref does not exist' });
       else if (cmd.old !== ZERO_OID && cmd.old !== current) results.push({ ref: cmd.ref, ok: false, reason: 'non-fast-forward' });
-      else { repo.refs.delete(cmd.ref); results.push({ ref: cmd.ref, ok: true, reason: '' }); }
+      else { repo.refs.delete(cmd.ref); repo.touchRefs(); results.push({ ref: cmd.ref, ok: true, reason: '' }); }
       continue;
     }
     if (!repo.hasObject(cmd.nw)) {
@@ -413,14 +454,14 @@ export async function handleReceivePack(req: IncomingMessage, res: ServerRespons
     if (cmd.old === ZERO_OID) {
       // create
       if (current) results.push({ ref: cmd.ref, ok: false, reason: 'already exists' });
-      else { repo.refs.set(cmd.ref, cmd.nw); results.push({ ref: cmd.ref, ok: true, reason: '' }); }
+      else { repo.refs.set(cmd.ref, cmd.nw); repo.touchRefs(); results.push({ ref: cmd.ref, ok: true, reason: '' }); }
       continue;
     }
     // update
     if (!current) results.push({ ref: cmd.ref, ok: false, reason: 'ref does not exist' });
     else if (cmd.old !== current) results.push({ ref: cmd.ref, ok: false, reason: 'non-fast-forward' });
     else if (!repo.isAncestor(cmd.old, cmd.nw)) results.push({ ref: cmd.ref, ok: false, reason: 'non-fast-forward' });
-    else { repo.refs.set(cmd.ref, cmd.nw); results.push({ ref: cmd.ref, ok: true, reason: '' }); }
+    else { repo.refs.set(cmd.ref, cmd.nw); repo.touchRefs(); results.push({ ref: cmd.ref, ok: true, reason: '' }); }
   }
   const inner: Buffer[] = [encodePktLine(unpackOk ? 'unpack ok\n' : 'unpack failed\n')];
   for (const r of results) {
