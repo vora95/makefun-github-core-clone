@@ -397,7 +397,6 @@ export function readPack(pack: Uint8Array, options: { resolveBase?: ObjectLookup
   const trailer = buffer.subarray(trailerStart).toString('hex');
   const computedTrailer = createHash('sha1').update(buffer.subarray(0, trailerStart)).digest('hex');
   if (trailer !== computedTrailer) throw new Error('pack trailer checksum mismatch');
-
   interface RawEntry {
     offset: number;
     typeCode: number;
@@ -544,3 +543,4 @@ export function buildCommit(tree: string, parents: readonly string[], message: s
 export function buildTag(object: string, type: GitObjectType, tag: string, message: string, tagger: string = FIXED_IDENT): Buffer {
   return Buffer.from(`object ${object}\ntype ${type}\ntag ${tag}\ntagger ${tagger}\n\n${message}`, 'utf8');
 }
+

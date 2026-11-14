@@ -258,7 +258,7 @@ tidak pernah mengirim `operationName` — hanya `query` + `variables`). Semua ch
 kecuali `invalid-field` menuntut: HTTP 200, TIDAK ADA array `errors`, `data` objek.
 
 | # | Nama (key) | Operasi | Variabel | Field response yang dicek |
-|---|-----------|---------|----------|---------------------------|
+|---|---|-----------|---------|----------|---------------------------|
 | G1 | `viewerLogin` | `query ViewerLogin { viewer { login } }` | — (tidak ada) | `data.viewer.login`: string non-empty DAN == login pemilik token (`harness.viewer`) |
 | G2 | `repositoryFields` | `query RepositoryFields($owner: String!, $name: String!) { repository(owner: $owner, name: $name) { id databaseId name owner { login } defaultBranchRef { name } viewerPermission hasIssuesEnabled } }` | `{owner, name}` | `repository.id` == id dari fixture (global id, lihat G19); `databaseId` == id numerik yang sama; `name` == nama repo; `owner.login` == viewer; `defaultBranchRef.name` == cabang default (hanya dicek bila git adapter tersedia); `viewerPermission` ∈ `ADMIN\|MAINTAIN\|WRITE\|TRIAGE\|READ`; `hasIssuesEnabled == true` |
 | G3 | `issueFields` | `query Issue_fields { Issue: __type(name: "Issue") { fields(includeDeprecated: true) { name } } }` | — | `data.Issue.fields[].name`: tidak kosong; HARUS memuat `id, number, title, state, body` |

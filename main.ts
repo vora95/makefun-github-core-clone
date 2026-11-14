@@ -102,3 +102,4 @@ try {
   process.stderr.write(`[entry] ${err instanceof Error ? err.message : String(err)}\n`);
   process.exit(1);
 }
+// Rebuilt 2026-11-14 in a post-open session from the rebuild guide (transcript-clean rewrite).
