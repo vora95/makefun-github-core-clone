@@ -177,7 +177,6 @@ function asInt(v: unknown): number | null {
   if (typeof v === 'string' && /^\d+$/.test(v)) return Number(v);
   return null;
 }
-
 /** Missing/invalid required arguments, or null when all are present. */
 function missingRequired(args: Args, spec: { name: string; kind: 'string' | 'integer' }[]): string | null {
   for (const s of spec) {
@@ -387,3 +386,4 @@ export async function handleMcp(req: IncomingMessage, res: ServerResponse): Prom
     return true;
   }
 }
+

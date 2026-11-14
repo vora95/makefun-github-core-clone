@@ -147,7 +147,6 @@ Detail tiap langkah:
   "notes": ["no entry registered before the boot deadline"]
 }
 ```
-
 - `version`: `STATE_VERSION = 1`.
 - `working`: `Bit` 0|1 — lihat §2.3.
 - `checks`: **satu bit 0|1 untuk setiap dari 120 id check** dalam bentuk `<group>.<slug>` (mis. `git.clone-empty`); check yang tidak pernah jalan = 0. Id yang tidak ada di manifest diabaikan saat menghitung counts; id yang hilang dari export dihitung 0. Bila suite mendaftarkan check lebih sedikit dari manifest, export mengisi kekurangannya dengan id `<group>.missing-<n>` bit 0 (padding, §1.2).
@@ -440,3 +439,4 @@ node --experimental-strip-types main.ts
 ```
 
 `main.ts` starter: bind port ephemeral (`listen(0)`), `POST $MAKEFUN_ENV_URL/register {"port": …}`, poll `GET $MAKEFUN_ENV_URL/done` dengan backoff eksponensial, exit 0 saat `{"done": true}`; bila `MAKEFUN_ENV_URL` tidak diset, exit 1 langsung. `app.ts` hanya menjawab `GET /healthz` + 2 route REST minimal + JSON 404 — boot dan register lolos, hampir semua check gagal; git smart HTTP, REST v3, GraphQL, dan MCP adalah isi kompetisinya.
+
